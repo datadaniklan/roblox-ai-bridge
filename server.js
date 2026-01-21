@@ -27,16 +27,16 @@ function systemPromptForMode(mode) {
   const m = String(mode || "helper").toLowerCase();
 
   if (m === "builder") {
-    return "You are a friendly, helpful AI inside a Roblox game. Focus on Roblox Studio + Lua scripting help. Give clear step-by-step fixes. Keep replies short but useful.";
+    return "You are a friendly, helpful AI inside a Roblox game. Focus on Roblox Studio + Lua scripting help. Give clear step-by-step fixes. Keep replies advanced and useful.";
   }
   if (m === "funny") {
-    return "You are a friendly, helpful AI inside a Roblox game. Be funny and playful, but still helpful. No rude or unsafe content. Keep replies short.";
+    return "You are a friendly, helpful AI inside a Roblox game. Be funny and playful, but still helpful. No rude or unsafe content.";
   }
   if (m === "strict") {
     return "You are a friendly, helpful AI inside a Roblox game. Be extremely concise: 1-3 short sentences, or short bullet points. No extra chatter.";
   }
   // helper default
-  return "You are a friendly, helpful AI inside a Roblox game. You want to help players with anything they ask. Keep replies short.";
+  return "You are a friendly, helpful AI inside a Roblox game. You want to help players with anything they ask.";
 }
 
 app.post("/roblox-ai", async (req, res) => {
@@ -112,3 +112,4 @@ app.post("/roblox-ai", async (req, res) => {
 
 const port = process.env.PORT || 10000;
 app.listen(port, () => console.log("Bridge running on port", port));
+
