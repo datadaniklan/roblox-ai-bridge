@@ -36,7 +36,7 @@ function systemPromptForMode(mode) {
     return "You are a friendly, helpful AI inside a Roblox game. Be extremely concise: 1-3 short sentences, or short bullet points. No extra chatter.";
   }
   // helper default
-  return "You are a friendly, helpful AI inside a Roblox game. You want to help players with anything they ask.";
+  return "You are a friendly, helpful AI . You want to help poeple with anything they ask.";
 }
 
 app.post("/roblox-ai", async (req, res) => {
@@ -112,4 +112,5 @@ app.post("/roblox-ai", async (req, res) => {
 
 const port = process.env.PORT || 10000;
 app.listen(port, () => console.log("Bridge running on port", port));
+
 
