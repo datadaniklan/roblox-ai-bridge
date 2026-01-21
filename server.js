@@ -17,7 +17,7 @@ app.get("/", (req, res) => {
   res.send("OK - Roblox AI Bridge is running ✅");
 });
 
-// ✅ THIS is what your browser test was missing
+// ✅ browser test
 app.get("/roblox-ai", (req, res) => {
   res.send("OK - /roblox-ai is ready ✅ (POST only)");
 });
@@ -29,36 +29,50 @@ app.post("/roblox-ai", async (req, res) => {
       return res.json({ reply: "Server missing OPENAI_KEY 😭" });
     }
 
-    const { username, message } = req.body || {};
+    // ✅ NOW includes history (keeps your AI preset)
+    const { username, message, history } = req.body || {};
     if (typeof message !== "string" || message.trim() === "") {
       return res.json({ reply: "Say something first 😅" });
     }
 
     const safeUser = String(username || "Player").slice(0, 30);
-    const safeMsg = String(message).slice(0, 300);
+    const safeMsg = String(message || "").slice(0, 300);
 
-    const response = await fetch(
-      "https://api.openai.com/v1/chat/completions",
+    // ✅ Use history if provided, but limit it
+    const hist = Array.isArray(history) ? history.slice(-40) : [];
+
+    // ✅ KEEP YOUR AI PRESET (just upgraded to remember)
+    const messages = [
       {
-        method: "POST",
-        headers: {
-          Authorization: `Bearer ${OPENAI_KEY}`,
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          model: MODEL,
-          messages: [
-            { role: "system", content: "You are a friendly Roblox AI. Keep replies short." },
-            { role: "user", content: `${safeUser}: ${safeMsg}` },
-          ],
-          max_tokens: 120,
-        }),
-      }
-    );
+        role: "system",
+        content:
+          "You are a friendly, helpful AI inside a Roblox game. You want to help players with anything they ask."
+      },
+      ...hist.map((m) => ({
+        role: m.role === "assistant" ? "assistant" : "user",
+        content: String(m.content || "").slice(0, 300),
+      })),
+      { role: "user", content: `${safeUser}: ${safeMsg}` },
+    ];
+
+    const response = await fetch("https://api.openai.com/v1/chat/completions", {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${OPENAI_KEY}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        model: MODEL,
+        messages: messages,
+        max_tokens: 120,
+      }),
+    });
 
     const raw = await response.text();
     let data = null;
-    try { data = JSON.parse(raw); } catch {}
+    try {
+      data = JSON.parse(raw);
+    } catch {}
 
     if (!response.ok) {
       const errMsg = data?.error?.message || raw || "Unknown OpenAI error";
@@ -83,3 +97,5 @@ app.post("/roblox-ai", async (req, res) => {
 
 const port = process.env.PORT || 10000;
 app.listen(port, () => console.log("Bridge running on port", port));
+
+
