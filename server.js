@@ -17,10 +17,27 @@ app.get("/", (req, res) => {
   res.send("OK - Roblox AI Bridge is running ✅");
 });
 
-// ✅ browser test
+// browser test
 app.get("/roblox-ai", (req, res) => {
   res.send("OK - /roblox-ai is ready ✅ (POST only)");
 });
+
+// ✅ mode -> system prompt
+function systemPromptForMode(mode) {
+  const m = String(mode || "helper").toLowerCase();
+
+  if (m === "builder") {
+    return "You are a friendly, helpful AI inside a Roblox game. Focus on Roblox Studio + Lua scripting help. Give clear step-by-step fixes. Keep replies short but useful.";
+  }
+  if (m === "funny") {
+    return "You are a friendly, helpful AI inside a Roblox game. Be funny and playful, but still helpful. No rude or unsafe content. Keep replies short.";
+  }
+  if (m === "strict") {
+    return "You are a friendly, helpful AI inside a Roblox game. Be extremely concise: 1-3 short sentences, or short bullet points. No extra chatter.";
+  }
+  // helper default
+  return "You are a friendly, helpful AI inside a Roblox game. You want to help players with anything they ask. Keep replies short.";
+}
 
 app.post("/roblox-ai", async (req, res) => {
   try {
@@ -29,8 +46,8 @@ app.post("/roblox-ai", async (req, res) => {
       return res.json({ reply: "Server missing OPENAI_KEY 😭" });
     }
 
-    // ✅ NOW includes history (keeps your AI preset)
-    const { username, message, history } = req.body || {};
+    // ✅ includes history + mode
+    const { username, message, history, mode } = req.body || {};
     if (typeof message !== "string" || message.trim() === "") {
       return res.json({ reply: "Say something first 😅" });
     }
@@ -38,15 +55,13 @@ app.post("/roblox-ai", async (req, res) => {
     const safeUser = String(username || "Player").slice(0, 30);
     const safeMsg = String(message || "").slice(0, 300);
 
-    // ✅ Use history if provided, but limit it
+    // Use history if provided, but limit it
     const hist = Array.isArray(history) ? history.slice(-40) : [];
 
-    // ✅ KEEP YOUR AI PRESET (just upgraded to remember)
     const messages = [
       {
         role: "system",
-        content:
-          "You are a friendly, helpful AI inside a Roblox game. You want to help players with anything they ask."
+        content: systemPromptForMode(mode),
       },
       ...hist.map((m) => ({
         role: m.role === "assistant" ? "assistant" : "user",
@@ -63,8 +78,8 @@ app.post("/roblox-ai", async (req, res) => {
       },
       body: JSON.stringify({
         model: MODEL,
-        messages: messages,
-        max_tokens: 120,
+        messages,
+        max_tokens: 160, // a tiny bit more so it doesn't cut off mid-sentence
       }),
     });
 
@@ -97,5 +112,3 @@ app.post("/roblox-ai", async (req, res) => {
 
 const port = process.env.PORT || 10000;
 app.listen(port, () => console.log("Bridge running on port", port));
-
-
