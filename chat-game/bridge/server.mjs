@@ -1,6 +1,7 @@
 import http from 'node:http';
 import { timingSafeEqual, createHash } from 'node:crypto';
 import { pathToFileURL } from 'node:url';
+import { createConversations } from './conversations.mjs';
 
 export const MODEL_CATALOG = Object.freeze([
   Object.freeze({ id: 'gpt-6-luna', label: 'GPT-6 Luna · Fast' }),
@@ -60,6 +61,8 @@ export function readConfig(env = process.env) {
     port: integer(env, 'PORT', 10000, 0, 65535),
     playerRequestsPerMinute: integer(env, 'PLAYER_REQUESTS_PER_MINUTE', 6, 1, 60),
     globalRequestsPerMinute: integer(env, 'GLOBAL_REQUESTS_PER_MINUTE', 60, 1, 6000),
+    metadataRequestsPerMinute: integer(env, 'METADATA_REQUESTS_PER_MINUTE', 30, 1, 300),
+    globalMetadataRequestsPerMinute: integer(env, 'GLOBAL_METADATA_REQUESTS_PER_MINUTE', 300, 1, 6000),
     maxConcurrent: integer(env, 'MAX_CONCURRENT_REQUESTS', 8, 1, 100),
     timeoutMs: integer(env, 'OPENAI_TIMEOUT_MS', 25000, 100, 55000),
     maxOutputTokens: integer(env, 'MAX_OUTPUT_TOKENS', 700, 64, 2000),
@@ -164,7 +167,7 @@ function createLimiter(config, now) {
   };
 }
 
-async function readUpstream(response) {
+async function readUpstream(response, maxBytes = LIMITS.upstreamBytes) {
   if (!response.body) throw new HttpError(502, 'upstream_response', 'The AI service returned an empty response.');
   const reader = response.body.getReader();
   const chunks = [];
@@ -174,7 +177,7 @@ async function readUpstream(response) {
       const { done, value } = await reader.read();
       if (done) break;
       size += value.byteLength;
-      if (size > LIMITS.upstreamBytes) throw new HttpError(502, 'upstream_response', 'The AI service response was too large.');
+      if (size > maxBytes) throw new HttpError(502, 'upstream_response', 'The AI service response was too large.');
       chunks.push(value);
     }
     try { return JSON.parse(Buffer.concat(chunks).toString('utf8')); }
@@ -185,14 +188,14 @@ async function readUpstream(response) {
   } finally { reader.releaseLock(); }
 }
 
-async function openAI(fetchImpl, config, path, body, signal) {
+async function openAI(fetchImpl, config, path, body, signal, { method = 'POST', maxBytes } = {}) {
   signal.throwIfAborted();
   let response;
   try {
     response = await fetchImpl(`https://api.openai.com/v1/${path}`, {
-      method: 'POST',
+      method,
       headers: { Authorization: `Bearer ${config.apiKey}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify(body),
+      ...(body === undefined ? {} : { body: JSON.stringify(body) }),
       signal,
       redirect: 'error',
     });
@@ -204,11 +207,13 @@ async function openAI(fetchImpl, config, path, body, signal) {
     void response.body?.cancel().catch(() => {});
     if ([401, 403].includes(response.status)) throw new HttpError(503, 'upstream_credentials', 'The AI service key needs attention from the game owner.');
     if (response.status === 429) throw new HttpError(429, 'upstream_rate_limit', 'The AI service limit was reached. Try again later or ask the game owner to check API billing.', 30);
+    if (response.status === 404 && path.startsWith('conversations/')) throw new HttpError(404, 'conversation_not_found', 'This saved chat is no longer available.');
+    if (response.status === 404 && path.startsWith('responses/')) throw new HttpError(409, 'request_uncertain', 'The previous reply cannot be recovered. Reload chat history before continuing.');
     if (response.status === 404) throw new HttpError(503, 'model_unavailable', 'This model is unavailable to the game owner. Select another model.');
     throw new HttpError(502, 'upstream_error', 'The AI service could not finish this request.');
   }
   try {
-    const data = await readUpstream(response);
+    const data = await readUpstream(response, maxBytes);
     signal.throwIfAborted();
     return data;
   } catch (error) {
@@ -275,6 +280,10 @@ async function generateReply(fetchImpl, config, chat) {
 
 export function createBridge({ config = readConfig(), fetchImpl = globalThis.fetch, now = Date.now } = {}) {
   const takeRequest = createLimiter(config, now);
+  const takeMetadataRequest = createLimiter({ ...config, playerRequestsPerMinute: config.metadataRequestsPerMinute, globalRequestsPerMinute: config.globalMetadataRequestsPerMinute }, now);
+  const conversations = createConversations({ config, now, HttpError, extractReply,
+    request: (path, body, signal, options) => openAI(fetchImpl, config, path, body, signal, options),
+  });
   const activePlayers = new Set();
   let concurrent = 0;
   let shuttingDown = false;
@@ -284,7 +293,7 @@ export function createBridge({ config = readConfig(), fetchImpl = globalThis.fet
         replyJson(res, shuttingDown ? 503 : 200, { ok: !shuttingDown, ready: config.ready, mode: config.mock ? 'offline-demo' : 'openai' });
         return;
       }
-      if (req.url !== '/v1/models' && req.url !== '/v1/chat') throw new HttpError(404, 'not_found', 'Endpoint not found.');
+      if (req.url !== '/v1/models' && req.url !== '/v1/chat' && !conversations.routes.includes(req.url)) throw new HttpError(404, 'not_found', 'Endpoint not found.');
       if (shuttingDown || !config.ready) throw new HttpError(503, 'not_configured', 'The game owner must finish configuring the AI bridge.');
       if (!authenticated(req.headers.authorization, config.bridgeToken)) throw new HttpError(401, 'unauthorized', 'Invalid bridge credentials.');
       const method = req.url === '/v1/models' ? 'GET' : 'POST';
@@ -296,14 +305,15 @@ export function createBridge({ config = readConfig(), fetchImpl = globalThis.fet
         replyJson(res, 200, { models: config.models, defaultModel: config.defaultModel });
         return;
       }
-      const chat = validateChat(await readBody(req), config);
+      const isV2 = req.url.startsWith('/v2/');
+      const chat = isV2 ? conversations.validate(req.url, await readBody(req)) : validateChat(await readBody(req), config);
       if (activePlayers.has(chat.playerId)) throw new HttpError(409, 'request_in_progress', 'Wait for your current reply before sending another message.');
       if (concurrent >= config.maxConcurrent) throw new HttpError(429, 'busy', 'The AI lounge is busy. Please try again shortly.', 5);
-      takeRequest(chat.playerId);
+      (isV2 && req.url !== '/v2/chat' ? takeMetadataRequest : takeRequest)(chat.playerId);
       concurrent += 1;
       activePlayers.add(chat.playerId);
       try {
-        const result = config.mock
+        const result = isV2 ? await conversations.execute(req.url, chat) : config.mock
           ? { reply: '[OFFLINE DEMO — no OpenAI call] The game and bridge connection work. The game owner must configure a valid OpenAI API key and turn off ALLOW_MOCK for AI replies.', model: 'mock-demo' }
           : await generateReply(fetchImpl, config, chat);
         replyJson(res, 200, result);
